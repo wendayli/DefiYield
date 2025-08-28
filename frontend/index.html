@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>TokenFarm - Localhost</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { 
+      font-family: Arial, sans-serif; 
+      padding: 20px; 
+      background: #f4f4f4; 
+      color: #333;
+    }
+    .container { 
+      max-width: 600px; 
+      margin: auto; 
+      background: white; 
+      padding: 20px; 
+      border-radius: 10px; 
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    }
+    h1 { text-align: center; }
+    input, button { 
+      padding: 10px; 
+      margin: 5px; 
+      border: 1px solid #ccc;
+      border-radius: 5px;
+    }
+    button { 
+      background: #007bff; 
+      color: white; 
+      border: none; 
+      cursor: pointer;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .status { 
+      color: #d9534f; 
+      margin: 10px 0; 
+      font-size: 14px;
+    }
+    .balance {
+      background: #f8f9fa;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 10px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🏦 TokenFarm</h1>
+    <p><strong>Cuenta:</strong> <span id="account">No conectado</span></p>
+    <div class="balance" id="balances"></div>
+    <div class="status" id="status"></div>
+
+    <h2>Staking</h2>
+    <input type="number" id="stakeAmount" placeholder="Cantidad LP" step="0.0001" />
+    <button onclick="stake()">Stake</button>
+
+    <h2>Recompensas</h2>
+    <p>Acumuladas: <span id="earned">0.0</span> DAPP</p>
+    <button onclick="getReward()">Reclamar</button>
+
+    <h2>Retirar</h2>
+    <input type="number" id="withdrawAmount" placeholder="Cantidad" step="0.0001" />
+    <button onclick="withdraw()">Withdraw</button>
+
+    <br>
+    <button onclick="connect()" id="connectBtn">Conectar MetaMask</button>
+  </div>
+
+  <!-- ✅ Corregido: URL limpia sin espacios -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.1/dist/ethers.umd.min.js"></script>
+  <script>
+    let provider, signer, dappToken, lpToken, tokenFarm;
+    let DAPP_ADDRESS, LP_ADDRESS, FARM_ADDRESS;
+    let userAddress;
+
+    // ✅ Cargar direcciones
+    async function loadAddresses() {
+      try {
+        const response = await fetch('deployment.json');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const addresses = await response.json();
+        DAPP_ADDRESS = addresses.DappToken;
+        LP_ADDRESS = addresses.LPToken;
+        FARM_ADDRESS = addresses.TokenFarm;
+        document.getElementById("status").textContent = "✅ Direcciones cargadas";
+      } catch (error) {
+        console.error("Error cargando direcciones:", error);
+        document.getElementById("status").textContent = `❌ deployment.json no encontrado: ${error.message}`;
+      }
+    }
+
+    // ✅ Conectar MetaMask
+    async function connect() {
+      document.getElementById("status").textContent = "";
+      if (window.ethereum) {
+        try {
+          // Solicitar cuentas
+          const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+          userAddress = accounts[0];
+          
+          provider = new ethers.BrowserProvider(window.ethereum);
+          signer = await provider.getSigner();
+
+          // Crear contratos
+          dappToken = new ethers.Contract(DAPP_ADDRESS, [
+            "function balanceOf(address owner) view returns (uint256)"
+          ], signer);
+          
+          lpToken = new ethers.Contract(LP_ADDRESS, [
+            "function approve(address spender, uint256 amount) returns (bool)",
+            "function balanceOf(address owner) view returns (uint256)"
+          ], signer);
+          
+          tokenFarm = new ethers.Contract(FARM_ADDRESS, [
+            "function stake(uint256 amount)",
+            "function withdraw(uint256 amount)",
+            "function getReward()",
+            "function earned(address account) view returns (uint256)"
+          ], signer);
+
+          // Actualizar UI
+          document.getElementById("account").textContent = userAddress;
+          document.getElementById("connectBtn").textContent = "Conectado";
+          document.getElementById("status").textContent = "✅ Conectado";
+          
+          // Escuchar cambios
+          window.ethereum.on('accountsChanged', () => window.location.reload());
+          window.ethereum.on('chainChanged', () => window.location.reload());
+
+          // Actualizar balances
+          await updateBalances();
+        } catch (error) {
+          document.getElementById("status").textContent = `❌ Error: ${error.message}`;
+        }
+      } else {
+        document.getElementById("status").textContent = "❌ MetaMask no detectado";
+      }
+    }
+
+    // ✅ Actualizar balances
+    async function updateBalances() {
+      if (!lpToken || !tokenFarm || !userAddress) return;
+      try {
+        const lpBalance = await lpToken.balanceOf(userAddress);
+        const earned = await tokenFarm.earned(userAddress);
+        
+        document.getElementById("balances").innerHTML = `
+          <strong>LP Balance:</strong> ${ethers.formatEther(lpBalance)} LPT<br>
+          <strong>Total Staked:</strong> ${ethers.formatEther(await tokenFarm.stakedBalance(userAddress))} LPT
+        `;
+        document.getElementById("earned").textContent = ethers.formatEther(earned);
+      } catch (error) {
+        console.error("Error actualizando balances:", error);
+      }
+    }
+
+    // ✅ Stake
+    async function stake() {
+      const amountInput = document.getElementById("stakeAmount").value;
+      if (!amountInput || amountInput <= 0) {
+        return alert("Ingresa una cantidad válida");
+      }
+
+      try {
+        const amount = ethers.parseEther(amountInput);
+        document.getElementById("status").textContent = "Aprobando...";
+        
+        const tx = await lpToken.approve(FARM_ADDRESS, amount);
+        await tx.wait();
+        document.getElementById("status").textContent = "Stakeando...";
+        
+        const tx2 = await tokenFarm.stake(amount);
+        await tx2.wait();
+        
+        document.getElementById("status").textContent = "✅ Stake exitoso";
+        document.getElementById("stakeAmount").value = "";
+        await updateBalances();
+      } catch (error) {
+        document.getElementById("status").textContent = `❌ Error: ${error.reason || error.message}`;
+      }
+    }
+
+    // ✅ Withdraw
+    async function withdraw() {
+      const amountInput = document.getElementById("withdrawAmount").value;
+      if (!amountInput || amountInput <= 0) {
+        return alert("Ingresa una cantidad válida");
+      }
+
+      try {
+        const amount = ethers.parseEther(amountInput);
+        document.getElementById("status").textContent = "Retirando...";
+        
+        const tx = await tokenFarm.withdraw(amount);
+        await tx.wait();
+        
+        document.getElementById("status").textContent = "✅ Retiro exitoso";
+        document.getElementById("withdrawAmount").value = "";
+        await updateBalances();
+      } catch (error) {
+        document.getElementById("status").textContent = `❌ Error: ${error.reason || error.message}`;
+      }
+    }
+
+    // ✅ Get Reward
+    async function getReward() {
+      try {
+        document.getElementById("status").textContent = "Reclamando...";
+        const tx = await tokenFarm.getReward();
+        await tx.wait();
+        document.getElementById("status").textContent = "✅ Recompensa reclamada";
+        await updateBalances();
+      } catch (error) {
+        document.getElementById("status").textContent = `❌ Error: ${error.reason || error.message}`;
+      }
+    }
+
+    // ✅ Inicialización
+    async function init() {
+      await loadAddresses();
+      // Si ya hay cuenta conectada, reconectar automáticamente
+      if (window.ethereum && window.ethereum.selectedAddress) {
+        await connect();
+      }
+    }
+
+    // ✅ Actualizar cada 5 segundos
+    setInterval(updateBalances, 5000);
+
+    // ✅ Iniciar al cargar
+    window.onload = init;
+  </script>
+</body>
+</html>
